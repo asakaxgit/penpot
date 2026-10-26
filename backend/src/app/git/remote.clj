@@ -16,10 +16,14 @@
    [app.common.json :as json]
    [app.common.time :as ct]
    [app.http.client :as http]
+   [clojure.java.io :as jio]
    [cuerdas.core :as str])
   (:import
+   java.io.ByteArrayOutputStream
+   java.io.InputStream
    java.net.URI
-   java.net.URLEncoder))
+   java.net.URLEncoder
+   java.util.Base64))
 
 (def ^:private timeout (ct/duration "60s"))
 
@@ -316,6 +320,146 @@
       {:commit-sha (str sha)
        :req-data {:method "POST" :uri (str root "/repository/commits")}
        :rsp-data {:status (:status rsp) :commit-sha (str sha)}})))
+
+(defn- body-bytes
+  [body]
+  (cond
+    (bytes? body)
+    body
+
+    (string? body)
+    (.getBytes ^String body "UTF-8")
+
+    (instance? InputStream body)
+    (with-open [^InputStream in body
+                out (ByteArrayOutputStream.)]
+      (jio/copy in out)
+      (.toByteArray out))
+
+    :else
+    (fail! :git-remote-error "the git provider returned an empty file")))
+
+(defn- decode-b64
+  [value]
+  (try
+    (.decode (Base64/getDecoder) ^String (str/replace (str value) #"\s" ""))
+    (catch IllegalArgumentException _
+      (fail! :git-remote-error "the git provider returned a blob that is not base64"))))
+
+(defn- github-blob
+  [cfg {:keys [root headers token sha max-entry-bytes]}]
+  (let [rsp  (call! cfg {:method :get
+                         :uri (str root "/git/blobs/" sha)
+                         :headers headers}
+                    token {})
+        data (:data rsp)
+        bytes (cond
+                (= "base64" (:encoding data)) (decode-b64 (:content data))
+                (= "utf-8" (:encoding data)) (.getBytes ^String (:content data) "UTF-8")
+                :else (fail! :git-remote-error "unsupported blob encoding"))]
+    (when (and max-entry-bytes (> (alength ^bytes bytes) max-entry-bytes))
+      (fail! :git-entry-too-large "a file in the folder is too large"))
+    bytes))
+
+(defn- github-pull
+  [cfg {:keys [repo-url branch folder token max-entry-bytes]}]
+  (let [{:keys [host path]} (parse-repo-url "github" repo-url)
+        base     (api-base "github" host)
+        headers  (github-headers token)
+        repo     (->> (str/split path "/")
+                      (map url-encode)
+                      (str/join "/"))
+        root     (str base "/repos/" repo)
+        ref-uri  (str root "/git/refs/heads/" (url-encode branch))
+        ref      (call! cfg {:method :get :uri ref-uri :headers headers}
+                        token {:branch-lookup? true})
+        commit   (call! cfg {:method :get
+                             :uri (str root "/git/commits/" (get-in ref [:data :object :sha]))
+                             :headers headers}
+                        token {})
+        tree-sha (get-in commit [:data :tree :sha])
+        tree-uri (str root "/git/trees/" tree-sha "?recursive=1")
+        tree     (call! cfg {:method :get :uri tree-uri :headers headers}
+                        token {})]
+    (when (:truncated (:data tree))
+      (fail! :git-tree-truncated "the repository tree is too large to read"))
+    (let [prefix (str folder "/")
+          blobs  (->> (:tree (:data tree))
+                      (filter #(and (= "blob" (:type %))
+                                    (str/starts-with? (:path %) prefix)))
+                      vec)]
+      (when (empty? blobs)
+        (fail! :git-empty-export "the folder is empty"))
+      {:entries (mapv (fn [item]
+                        {:path (subs (:path item) (count prefix))
+                         :bytes (github-blob cfg {:root root
+                                                  :headers headers
+                                                  :token token
+                                                  :sha (:sha item)
+                                                  :max-entry-bytes max-entry-bytes})})
+                      blobs)
+       :req-data {:method "GET" :uri tree-uri}
+       :rsp-data {:status 200 :count (count blobs)}})))
+
+(defn- gitlab-raw
+  [cfg {:keys [root headers path branch max-entry-bytes]}]
+  (let [uri (str root "/repository/files/" (url-encode path) "/raw?ref=" (url-encode branch))
+        rsp (http/req cfg {:method :get :uri uri :headers headers :timeout timeout}
+                      {:response-type :input-stream})
+        status (:status rsp)]
+    (if (<= 200 status 299)
+      (let [bytes (body-bytes (:body rsp))]
+        (when (and max-entry-bytes (> (alength ^bytes bytes) max-entry-bytes))
+          (fail! :git-entry-too-large "a file in the folder is too large"))
+        bytes)
+      (do
+        (when (instance? InputStream (:body rsp))
+          (.close ^InputStream (:body rsp)))
+        (fail! :git-remote-error
+               (str "the git provider rejected the request (" status ")"))))))
+
+(defn- gitlab-pull
+  [cfg {:keys [repo-url branch folder token max-entry-bytes]}]
+  (let [{:keys [host path]} (parse-repo-url "gitlab" repo-url)
+        base    (api-base "gitlab" host)
+        headers (gitlab-headers token)
+        root    (str base "/projects/" (gitlab-project path))
+        _       (call! cfg {:method :get
+                            :uri (str root "/repository/branches/" (url-encode branch))
+                            :headers headers}
+                       token {:branch-lookup? true})
+        listed  (gitlab-tree cfg {:root root
+                                  :headers headers
+                                  :folder folder
+                                  :branch branch})
+        prefix  (str folder "/")
+        blobs   (->> listed
+                     (filter #(and (= "blob" (:type %))
+                                   (str/starts-with? (:path %) prefix)))
+                     vec)]
+    (when (empty? blobs)
+      (fail! :git-empty-export "the folder is empty"))
+    {:entries (mapv (fn [item]
+                      {:path (subs (:path item) (count prefix))
+                       :bytes (gitlab-raw cfg {:root root
+                                               :headers headers
+                                               :path (:path item)
+                                               :branch branch
+                                               :max-entry-bytes max-entry-bytes})})
+                    blobs)
+     :req-data {:method "GET" :uri (str root "/repository/tree")}
+     :rsp-data {:status 200 :count (count blobs)}}))
+
+(defn pull-folder
+  "Read the files under `folder` on `branch`.
+
+  Paths in `:entries` are relative to the folder. The recorded request
+  is the method and URI only, never the token."
+  [cfg {:keys [provider] :as params}]
+  (case provider
+    "github" (github-pull cfg params)
+    "gitlab" (gitlab-pull cfg params)
+    (fail! :git-repo-url "unsupported git provider")))
 
 (defn push-folder
   "Commit `entries` under `folder` on `branch`.

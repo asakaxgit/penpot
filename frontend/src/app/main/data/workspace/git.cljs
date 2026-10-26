@@ -62,6 +62,19 @@
              (rx/catch (fn [_cause]
                          (rx/of (ntf/error (tr "workspace.git.error"))))))))))
 
+(defn pull-now
+  []
+  (ptk/reify ::pull-now
+    ptk/WatchEvent
+    (watch [_ state _]
+      (when-let [link (:link (:workspace-git state))]
+        (->> (rp/cmd! :pull-git-link {:id (:id link)})
+             (rx/mapcat (fn [_]
+                          (rx/of (fetch-link)
+                                 (ntf/success (tr "workspace.git.pull-queued")))))
+             (rx/catch (fn [_cause]
+                         (rx/of (ntf/error (tr "workspace.git.error"))))))))))
+
 (defn push-now
   []
   (ptk/reify ::push-now
