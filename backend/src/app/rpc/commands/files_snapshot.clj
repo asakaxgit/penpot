@@ -24,6 +24,7 @@
    [app.rpc.doc :as-alias doc]
    [app.rpc.permissions :as perms]
    [app.rpc.quotes :as quotes]
+   [app.tasks.git-push :as git-push]
    [app.util.services :as sv]))
 
 (def ^:private schema:get-file-snapshots
@@ -98,10 +99,14 @@
         (quotes/check! {::quotes/id ::quotes/snapshots-per-file}
                        {::quotes/id ::quotes/snapshots-per-team}))
 
-    (db/tx-run! cfg fsnap/create! file
-                {:label label
-                 :profile-id profile-id
-                 :created-by "user"})))
+    (let [snapshot (db/tx-run! cfg fsnap/create! file
+                               {:label label
+                                :profile-id profile-id
+                                :created-by "user"})]
+      (git-push/enqueue-snapshot-push cfg {:file-id file-id
+                                           :profile-id profile-id
+                                           :snapshot snapshot})
+      snapshot)))
 
 (def ^:private schema:restore-file-snapshot
   [:map {:title "restore-file-snapshot"}

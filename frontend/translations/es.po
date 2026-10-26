@@ -9817,3 +9817,79 @@ msgstr "Si quieres aumentar este límite, contáctanos en [support@penpot.app](%
 #: src/app/main/ui/workspace/sidebar/versions.cljs:462
 msgid "workspace.versions.warning.text"
 msgstr "Los autoguardados duran %s días."
+
+#: src/app/main/ui/workspace/main_menu.cljs
+msgid "workspace.git.menu"
+msgstr "Git"
+
+#: src/app/main/ui/workspace/git.cljs
+msgid "workspace.git.title"
+msgstr "Repositorio Git"
+
+#: src/app/main/ui/workspace/git.cljs
+msgid "workspace.git.provider"
+msgstr "Proveedor"
+
+#: src/app/main/ui/workspace/git.cljs
+msgid "workspace.git.repo-url"
+msgstr "URL del repositorio"
+
+#: src/app/main/ui/workspace/git.cljs
+msgid "workspace.git.branch"
+msgstr "Rama"
+
+#: src/app/main/ui/workspace/git.cljs
+msgid "workspace.git.folder"
+msgstr "Carpeta"
+
+#: src/app/main/ui/workspace/git.cljs
+msgid "workspace.git.token"
+msgstr "Token de acceso"
+
+#: src/app/main/ui/workspace/git.cljs
+msgid "workspace.git.token-set"
+msgstr "Hay un token guardado"
+
+#: src/app/main/ui/workspace/git.cljs
+msgid "workspace.git.save"
+msgstr "Guardar"
+
+#: src/app/main/ui/workspace/git.cljs
+msgid "workspace.git.saved"
+msgstr "Enlace guardado"
+
+#: src/app/main/ui/workspace/git.cljs
+msgid "workspace.git.delete"
+msgstr "Quitar enlace"
+
+#: src/app/main/ui/workspace/git.cljs
+msgid "workspace.git.push"
+msgstr "Enviar ahora"
+
+#: src/app/main/ui/workspace/git.cljs
+msgid "workspace.git.last-push"
+msgstr "Último envío"
+
+#: src/app/main/ui/workspace/git.cljs
+msgid "workspace.git.none"
+msgstr "Este archivo no está enlazado"
+
+#: src/app/main/ui/workspace/git.cljs
+msgid "workspace.git.queued"
+msgstr "Envío en cola. Actualiza para ver el resultado."
+
+#: src/app/main/ui/workspace/git.cljs
+msgid "workspace.git.github"
+msgstr "GitHub"
+
+#: src/app/main/ui/workspace/git.cljs
+msgid "workspace.git.gitlab"
+msgstr "GitLab"
+
+#: src/app/main/ui/workspace/git.cljs
+msgid "workspace.git.success"
+msgstr "Correcto"
+
+#: src/app/main/ui/workspace/git.cljs
+msgid "workspace.git.error"
+msgstr "Error"

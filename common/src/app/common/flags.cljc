@@ -197,7 +197,11 @@
     :link-preview
 
     ;; Shows the "link later" option on the files export modal.
-    :export-link-later})
+    :export-link-later
+
+    ;; Link a file to a Git repository and push a canonical export.
+    ;; Off unless PENPOT_FLAGS includes enable-git-integration.
+    :git-integration})
 
 (def all-flags
   (set/union email login varia))

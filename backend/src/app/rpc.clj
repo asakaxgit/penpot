@@ -399,6 +399,7 @@
           'app.rpc.commands.files-share
           'app.rpc.commands.files-update
           'app.rpc.commands.files-snapshot
+          'app.rpc.commands.git
           'app.rpc.commands.files-thumbnails
           'app.rpc.commands.jobs
           'app.rpc.commands.ldap

@@ -695,6 +695,12 @@ And configure it:
 PENPOT_SECRET_KEY: my-super-secure-key
 ```
 
+Git integration, behind the `enable-git-integration` flag, stores provider
+tokens encrypted with a key derived from this secret. The flag is off by
+default. A random secret, the one Penpot generates when `PENPOT_SECRET_KEY`
+is unset, changes on restart and then the stored tokens cannot be decrypted.
+Set a fixed `PENPOT_SECRET_KEY` before linking a repository.
+
 ### Session expiration
 
 __Since version 2.19.0__
