@@ -39,6 +39,7 @@
    [app.storage :as sto]
    [app.storage.impl :as sto.impl]
    [app.util.events :as events]
+   [clojure.data.json :as data-json]
    [clojure.java.io :as jio]
    [cuerdas.core :as str]
    [datoteka.fs :as fs]
@@ -259,13 +260,109 @@
 
 ;; --- EXPORT IMPL
 
+;; DOS epoch. ZipEntry otherwise stamps "now", so two exports of the same
+;; file would differ even when the JSON is identical.
+(def ^:private canonical-zip-time
+  315532800000)
+
+(def ^:private canonical-file-keys
+  #{:revn :vern :created-at :modified-at :metadata
+    "revn" "vern" "createdAt" "modifiedAt" "metadata"})
+
+(defn- dissoc-canonical-file-keys
+  [file]
+  (apply dissoc file canonical-file-keys))
+
+(defn- json-order-key
+  [value]
+  (str (cond
+         (keyword? value) (name value)
+         :else            value)))
+
+(defn- sort-json
+  "Sort map keys and set values so a canonical export is byte-stable.
+  Vectors keep their order: page and shape lists are meaningful.
+
+  Values that implement JSONWriter (path data, fills, token libs) must
+  keep that writer. Walking them as maps or seqs emits a different
+  shape than the writer, and import would not round-trip."
+  [data]
+  (cond
+    (satisfies? data-json/JSONWriter data)
+    data
+
+    (set? data)
+    (->> data
+         (map sort-json)
+         (sort-by json-order-key)
+         (vec))
+
+    (map? data)
+    (into (sorted-map)
+          (map (fn [[k v]]
+                 (let [k (json/write-camel-key k)
+                       v (sort-json v)]
+                   [k (if (= k "features")
+                        (vec (sort-by json-order-key v))
+                        v)])))
+          data)
+
+    (sequential? data)
+    (mapv sort-json data)
+
+    :else
+    data))
+
+(defn- ordered
+  "Keep `coll` as-is unless canonical mode is on, then order it by `key-fn`
+  so zip entries are written in a stable order."
+  [canonical coll key-fn]
+  (if (and canonical (some? coll))
+    (sort-by (comp json-order-key key-fn) coll)
+    coll))
+
+(defn- canonical-manifest
+  "Drop volatile manifest fields and sort its lists."
+  [params]
+  (let [by-id (fn [item] (json-order-key (:id item)))]
+    (-> params
+        (dissoc :generated-by)
+        (update :files (fn [files]
+                         (->> files (sort-by by-id) vec)))
+        (update :relations (fn [relations]
+                             (->> relations
+                                  (sort-by (fn [[a b]]
+                                             [(json-order-key a)
+                                              (json-order-key b)]))
+                                  vec)))
+        (cond-> (seq (:external-libraries params))
+          (update :external-libraries
+                  (fn [libs]
+                    (->> libs
+                         (map (fn [lib]
+                                (cond-> lib
+                                  (:used-by lib)
+                                  (update :used-by
+                                          #(->> % (sort-by json-order-key) vec)))))
+                         (sort-by by-id)
+                         vec)))))))
+
 (defn- write-entry!
-  [^ZipOutputStream output ^String path data]
-  (.putNextEntry output (ZipEntry. path))
-  (let [writer (OutputStreamWriter. output "UTF-8")]
-    (json/write writer data :indent true :key-fn json/write-camel-key)
-    (.flush writer))
-  (.closeEntry output))
+  [{:keys [::output ::bfc/canonical]} ^String path data]
+  (let [entry (ZipEntry. path)]
+    (when canonical
+      (.setTime entry canonical-zip-time))
+    (.putNextEntry ^ZipOutputStream output entry)
+    (let [writer (OutputStreamWriter. ^ZipOutputStream output "UTF-8")
+          data   (if canonical (sort-json data) data)]
+      ;; String keys produced by `sort-json` pass through `write-camel-key`
+      ;; unchanged, so the sorted order sticks. Nested JSONWriter values
+      ;; still carry keyword keys and need the same camelCase fn.
+      (json/write writer data
+                  :indent true
+                  :key-fn json/write-camel-key)
+      (.flush writer))
+    (.closeEntry ^ZipOutputStream output)))
 
 
 (defn- get-file
@@ -294,9 +391,10 @@
                         (bfc/clean-file-features))))))
 
 (defn- export-storage-objects
-  [{:keys [::output] :as cfg}]
+  [{:keys [::output ::bfc/canonical] :as cfg}]
   (let [storage (sto/resolve cfg)
         ids     (-> bfc/*state* deref :storage-objects not-empty)
+        ids     (ordered canonical ids identity)
         total   (count ids)]
     (doseq [[index id] (d/enumerate ids)]
       (let [sobject (sto/get-object storage id)
@@ -306,20 +404,23 @@
             params  (-> (meta sobject)
                         (assoc :id (:id sobject))
                         (assoc :size (:size sobject))
-                        (encode-storage-object))]
+                        (encode-storage-object))
+            binary  (ZipEntry. (str "objects/" id ext))]
 
-        (write-entry! output path params)
+        (write-entry! cfg path params)
 
         (tap-progress cfg {:section :storage-object :id id
                            :current (inc index) :total total})
 
+        (when canonical
+          (.setTime binary canonical-zip-time))
         (with-open [input (sto/get-object-data storage sobject)]
-          (.putNextEntry ^ZipOutputStream output (ZipEntry. (str "objects/" id ext)))
+          (.putNextEntry ^ZipOutputStream output binary)
           (io/copy input output :size (:size sobject))
           (.closeEntry ^ZipOutputStream output))))))
 
 (defn- export-file
-  [{:keys [::file-id ::output] :as cfg}]
+  [{:keys [::file-id ::bfc/canonical] :as cfg}]
   (let [file          (get-file cfg file-id)
 
         media         (->> (bfc/get-file-media cfg file)
@@ -356,10 +457,14 @@
           file (-> file
                    (dissoc :data)
                    (dissoc :deleted-at)
-                   (encode-file))
+                   (cond-> canonical
+                     (dissoc-canonical-file-keys))
+                   (encode-file)
+                   (cond-> canonical
+                     (dissoc-canonical-file-keys)))
 
           path (str "files/" file-id ".json")]
-      (write-entry! output path file))
+      (write-entry! cfg path file))
 
     (doseq [[index page-id] (d/enumerate pages)]
 
@@ -371,47 +476,50 @@
                         (assoc :index index))
             page    (encode-page page)]
 
-        (write-entry! output path page)
+        (write-entry! cfg path page)
 
         (tap-progress cfg {:section :page :id page-id :name (:name page) :file-id file-id
                            :current (inc index) :total (count pages)})
 
-        (doseq [[shape-id shape] objects]
+        (doseq [[shape-id shape] (ordered canonical objects key)]
           (let [path  (str "files/" file-id "/pages/" page-id "/" shape-id ".json")
                 shape (assoc shape :page-id page-id)
                 shape (encode-shape shape)]
-            (write-entry! output path shape)))))
+            (write-entry! cfg path shape)))))
 
     (vswap! bfc/*state* bfc/collect-storage-objects media)
-    (vswap! bfc/*state* bfc/collect-storage-objects thumbnails)
+    (when-not canonical
+      (vswap! bfc/*state* bfc/collect-storage-objects thumbnails))
 
-    (doseq [[index {:keys [id] :as item}] (d/enumerate media)]
-      (let [path    (str "files/" file-id "/media/" id ".json")
-            encoded (encode-media item)]
+    (let [media (ordered canonical media :id)]
+      (doseq [[index {:keys [id] :as item}] (d/enumerate media)]
+        (let [path    (str "files/" file-id "/media/" id ".json")
+              encoded (encode-media item)]
 
-        (tap-progress cfg {:section :media :id id :file-id file-id
-                           :current (inc index) :total (count media)})
-        (write-entry! output path encoded)))
+          (tap-progress cfg {:section :media :id id :file-id file-id
+                             :current (inc index) :total (count media)})
+          (write-entry! cfg path encoded))))
 
-    (doseq [[index thumbnail] (d/enumerate thumbnails)]
-      (let [data (cth/parse-object-id (:object-id thumbnail))
-            path (str "files/" file-id "/thumbnails/" (:tag data) "/" (:page-id data)
-                      "/" (:frame-id data) ".json")
-            data (-> data
-                     (assoc :media-id (:media-id thumbnail))
-                     (encode-file-thumbnail))]
-        (tap-progress cfg {:section :thumbnails :id (:object-id thumbnail) :file-id file-id
-                           :current (inc index) :total (count thumbnails)})
-        (write-entry! output path data)))
+    (when-not canonical
+      (doseq [[index thumbnail] (d/enumerate thumbnails)]
+        (let [data (cth/parse-object-id (:object-id thumbnail))
+              path (str "files/" file-id "/thumbnails/" (:tag data) "/" (:page-id data)
+                        "/" (:frame-id data) ".json")
+              data (-> data
+                       (assoc :media-id (:media-id thumbnail))
+                       (encode-file-thumbnail))]
+          (tap-progress cfg {:section :thumbnails :id (:object-id thumbnail) :file-id file-id
+                             :current (inc index) :total (count thumbnails)})
+          (write-entry! cfg path data))))
 
-    (doseq [[index [id component]] (d/enumerate components)]
+    (doseq [[index [id component]] (d/enumerate (ordered canonical components key))]
       (let [path      (str "files/" file-id "/components/" id ".json")
             component (encode-component component)]
         (tap-progress cfg {:section :component :id id :file-id file-id
                            :current (inc index) :total (count components)})
-        (write-entry! output path component)))
+        (write-entry! cfg path component)))
 
-    (doseq [[index [id color]] (d/enumerate colors)]
+    (doseq [[index [id color]] (d/enumerate (ordered canonical colors key))]
       (let [path  (str "files/" file-id "/colors/" id ".json")
             color (-> (encode-color color)
                       (dissoc :file-id))
@@ -421,21 +529,21 @@
                     (dissoc :path))]
         (tap-progress cfg {:section :color :id id :file-id file-id
                            :current (inc index) :total (count colors)})
-        (write-entry! output path color)))
+        (write-entry! cfg path color)))
 
-    (doseq [[index [id object]] (d/enumerate typographies)]
+    (doseq [[index [id object]] (d/enumerate (ordered canonical typographies key))]
       (let [path       (str "files/" file-id "/typographies/" id ".json")
             typography (encode-typography object)]
         (tap-progress cfg {:section :typography :id id :file-id file-id
                            :current (inc index) :total (count typographies)})
-        (write-entry! output path typography)))
+        (write-entry! cfg path typography)))
 
     (when (and tokens-lib
                (not (ctob/empty-lib? tokens-lib)))
       (let [path           (str "files/" file-id "/tokens.json")
             encoded-tokens (encode-tokens-lib tokens-lib)]
         (tap-progress cfg {:section :tokens-lib :file-id file-id})
-        (write-entry! output path encoded-tokens)))
+        (write-entry! cfg path encoded-tokens)))
 
     (when tokens-status
       (let [path                  (str "files/" file-id "/tokens-status.json")
@@ -451,13 +559,17 @@
                                       (cfo/ids->names effective-tokens-lib))]
 
         (tap-progress cfg {:section :tokens-status :file-id file-id})
-        (write-entry! output path encoded-status)))))
+        (write-entry! cfg path encoded-status)))))
 
 (defn- export-files
-  [{:keys [::bfc/ids ::bfc/export-type ::output] :as cfg}]
+  [{:keys [::bfc/ids ::bfc/export-type ::bfc/canonical] :as cfg}]
 
   (let [original-ids ids
         ids  (into ids (when (= export-type :include-libraries) (bfc/get-libraries cfg ids)))
+        ;; A set has no stable walk order. Canonical zip bytes follow file id.
+        ids  (if canonical
+               (->> ids (sort-by json-order-key) vec)
+               ids)
         rels (if (= export-type :include-libraries)
                (->> (bfc/get-files-rels cfg ids)
                     (mapv (juxt :file-id :library-file-id)))
@@ -502,8 +614,10 @@
                           :files (vec (vals files))
                           :relations rels}
                    (seq external-libs)
-                   (assoc :external-libraries external-libs))]
-      (write-entry! output "manifest.json" params))))
+                   (assoc :external-libraries external-libs))
+          params (cond-> params
+                   canonical canonical-manifest)]
+      (write-entry! cfg "manifest.json" params))))
 
 ;; --- IMPORT IMPL
 
@@ -1028,6 +1142,15 @@
                                       :referer (or (get manifest :referer) (get manifest :refer))}))
                    (dissoc :options)
                    (dissoc :tokens-source))
+
+          ;; A canonical export drops revn. `read-file` would then default
+          ;; it to 1 and the overwrite would rewind history. Keep the
+          ;; caller's revn and vern instead. A plain import leaves both
+          ;; as the decoded file has them.
+          file (cond-> file
+                 (::bfc/overwrite cfg)
+                 (-> (assoc :revn (::bfc/overwrite-revn cfg))
+                     (assoc :vern (::bfc/overwrite-vern cfg))))
           file  (bfc/process-file cfg file)
           file  (ctf/check-file file)]
 
@@ -1298,7 +1421,7 @@
             (db/exec! cfg [sql-2 file-id]))))))
 
 (defn- import-file-and-overwrite*
-  [{:keys [::manifest ::bfc/file-id] :as cfg}]
+  [{:keys [::manifest ::bfc/file-id ::bfc/expected-revn] :as cfg}]
 
   (when (not= 1 (count (:files manifest)))
     (ex/raise :type :validation
@@ -1309,8 +1432,21 @@
   (bfc/configure-import-transaction cfg)
 
   (let [ref-file (bfc/get-minimal-file cfg file-id ::db/for-update true)
+        revn     (inc (:revn ref-file))
+        vern     (rand-int Integer/MAX_VALUE)
         file     (first (get manifest :files))
-        cfg      (assoc cfg ::bfc/overwrite true)]
+        cfg      (-> cfg
+                     (assoc ::bfc/overwrite true)
+                     (assoc ::bfc/overwrite-revn revn)
+                     (assoc ::bfc/overwrite-vern vern))]
+
+    ;; Same guard a version restore uses: the row we locked must still be
+    ;; the row the caller snapshotted.
+    (when (and (some? expected-revn)
+               (not= expected-revn (:revn ref-file)))
+      (ex/raise :type :conflict
+                :code :file-modified
+                :hint "the file was modified during the overwrite, please retry"))
 
     (vswap! bfc/*state* update :index assoc (:id file) file-id)
 
@@ -1324,6 +1460,8 @@
       (bfm/apply-pending-migrations! cfg)
 
       {:file-ids   [file-id]
+       :revn       revn
+       :vern       vern
        :resolution {}})))
 
 (defn- import-files
