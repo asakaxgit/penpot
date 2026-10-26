@@ -21,29 +21,41 @@
 (t/use-fixtures :once th/state-init)
 (t/use-fixtures :each th/database-reset)
 
-(t/deftest import-binfile-schema-omits-file-id
-  ;; N1-06: file-id parameter must be removed from schema for security
+(t/deftest import-binfile-schema-file-id-is-overwrite-target
+  ;; file-id used to be rejected (N1-06) so a client could not choose the
+  ;; id of a newly inserted file. It is back as an optional overwrite
+  ;; target: an existing file the caller can edit. A create without
+  ;; file-id still needs name and project-id. The map stays closed.
   (let [schema @#'binfile/schema:import-binfile
         validator (sm/lazy-validator schema)
+        file-id (uuid/random)
 
         valid-params
         {:name "test"
          :project-id (uuid/random)
          :version 3
-         :upload-id (uuid/random)}
-
-        params-with-file-id
-        (assoc valid-params :file-id (uuid/random))]
+         :upload-id (uuid/random)}]
 
     (t/is (true? (validator valid-params))
-          "params without file-id should be valid")
+          "a create without file-id stays valid")
 
-    (t/is (not (contains? (sm/keys (second schema)) :file-id))
-          "file-id should not be a declared parameter")
+    (t/is (contains? (sm/keys (second schema)) :file-id)
+          "file-id is the overwrite target")
 
-    ;; Params with file-id should fail (schema closed)
-    (t/is (false? (validator params-with-file-id))
-          "params with file-id should be rejected")))
+    (t/is (true? (validator (assoc valid-params :file-id file-id)))
+          "file-id is accepted together with a create payload")
+
+    (t/is (true? (validator {:file-id file-id
+                             :version 3
+                             :upload-id (uuid/random)}))
+          "name and project-id are optional when file-id is set")
+
+    (t/is (false? (validator {:version 3
+                              :upload-id (uuid/random)}))
+          "a create still requires name and project-id")
+
+    (t/is (false? (validator (assoc valid-params :extra true)))
+          "the schema stays closed")))
 
 (t/deftest import-binfile-schema-accepts-path-object
   ;; Documents the schema hole: a server-side Path object in :file passes
