@@ -9763,6 +9763,14 @@ msgid "workspace.git.push"
 msgstr "Push now"
 
 #: src/app/main/ui/workspace/git.cljs
+msgid "workspace.git.pull"
+msgstr "Pull"
+
+#: src/app/main/data/workspace/git.cljs
+msgid "workspace.git.pull-queued"
+msgstr "Pull queued. The file reloads when it finishes."
+
+#: src/app/main/ui/workspace/git.cljs
 msgid "workspace.git.last-push"
 msgstr "Last push"
 

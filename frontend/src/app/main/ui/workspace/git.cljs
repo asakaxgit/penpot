@@ -131,6 +131,11 @@
         (when link
           [:> button* {:variant "secondary"
                        :type "button"
+                       :on-click #(st/emit! (dwg/pull-now))}
+           (tr "workspace.git.pull")])
+        (when link
+          [:> button* {:variant "secondary"
+                       :type "button"
                        :on-click #(st/emit! (dwg/push-now))}
            (tr "workspace.git.push")])
         [:> button* {:variant "primary"

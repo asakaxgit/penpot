@@ -657,6 +657,7 @@
     :jobs-gc                        (ig/ref :app.jobs.gc/job-def)
     :telemetry                      (ig/ref :app.tasks.telemetry/job-def)
     :git-push                       (ig/ref :app.tasks.git-push/job-def)
+    :git-pull                       (ig/ref :app.tasks.git-pull/job-def)
     :session-gc                     (ig/ref ::session/job-def)
     :file-gc-scheduler              (ig/ref :app.tasks.file-gc-scheduler/job-def)
     :audit-log-consumer-nexus        (ig/ref :app.loggers.audit.consumer-task/nexus-job-def)
@@ -747,6 +748,14 @@
     ::http.client/client (ig/ref ::http.client/client)
     ::setup/props        (ig/ref ::setup/props)
     ::mtx/metrics        (ig/ref ::mtx/metrics)}
+
+   :app.tasks.git-pull/job-def
+   {::db/pool            (ig/ref ::db/pool)
+    ::sto/storage        (ig/ref ::sto/storage)
+    ::http.client/client (ig/ref ::http.client/client)
+    ::setup/props        (ig/ref ::setup/props)
+    ::mtx/metrics        (ig/ref ::mtx/metrics)
+    ::mbus/msgbus        (ig/ref ::mbus/msgbus)}
 
    ::session/job-def
    {::db/pool     (ig/ref ::db/pool)

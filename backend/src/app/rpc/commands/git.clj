@@ -39,10 +39,11 @@
           p.status AS last_push_status,
           p.created_at AS last_push_at,
           p.commit_message AS last_push_message,
-          p.error AS last_push_error
+          p.error AS last_push_error,
+          p.direction AS last_direction
      FROM git_link AS l
      LEFT JOIN LATERAL (
-       SELECT status, created_at, commit_message, error
+       SELECT status, created_at, commit_message, error, direction
          FROM git_push
         WHERE git_link_id = l.id
         ORDER BY created_at DESC
@@ -204,6 +205,26 @@
                                ::jobs/profile-id profile-id
                                ::jobs/params {:git-link-id id
                                               :commit-message "Push now"
+                                              :profile-id profile-id}})]
+      (rph/with-meta {:job-id job-id}
+        {::audit/props {:file-id (:file-id current)}}))))
+
+(def ^:private schema:pull-git-link
+  [:map {:title "pull-git-link"}
+   [:id ::sm/uuid]])
+
+(sv/defmethod ::pull-git-link
+  {::doc/added "2.15"
+   ::sm/params schema:pull-git-link}
+  [{:keys [::db/pool] :as cfg} {:keys [::rpc/profile-id id]}]
+  (check-enabled!)
+  (let [current (db/get pool :git-link {:id id})]
+    (files/check-edition-permissions! pool profile-id (:file-id current))
+    (let [job-id (jobs/submit cfg
+                              {::jobs/name :git-pull
+                               ::jobs/max-retries 0
+                               ::jobs/profile-id profile-id
+                               ::jobs/params {:git-link-id id
                                               :profile-id profile-id}})]
       (rph/with-meta {:job-id job-id}
         {::audit/props {:file-id (:file-id current)}}))))

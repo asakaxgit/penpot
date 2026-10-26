@@ -535,7 +535,10 @@
     :fn (mg/resource "app/migrations/sql/0157-add-audit-log-pending-table.sql")}
 
    {:name "0158-add-git-link-and-git-push-tables"
-    :fn (mg/resource "app/migrations/sql/0158-add-git-link-and-git-push-tables.sql")}])
+    :fn (mg/resource "app/migrations/sql/0158-add-git-link-and-git-push-tables.sql")}
+
+   {:name "0159-add-git-push-direction"
+    :fn (mg/resource "app/migrations/sql/0159-add-git-push-direction.sql")}])
 
 (defn apply-migrations!
   [pool name migrations]
