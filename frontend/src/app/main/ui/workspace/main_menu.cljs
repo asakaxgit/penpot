@@ -23,6 +23,7 @@
    [app.main.data.shortcuts :as scd]
    [app.main.data.workspace :as dw]
    [app.main.data.workspace.comments :as dwcm]
+   [app.main.data.workspace.git :as dwg]
    [app.main.data.workspace.history :as dwh]
    [app.main.data.workspace.libraries :as dwl]
    [app.main.data.workspace.mcp :as mcp]
@@ -629,6 +630,18 @@
            (when (kbd/enter? event)
              (on-show-version-history event))))
 
+        on-git
+        (mf/use-fn
+         (fn [_]
+           (modal/show! {:type :git-link})))
+
+        on-git-key-down
+        (mf/use-fn
+         (mf/deps on-git)
+         (fn [event]
+           (when (kbd/enter? event)
+             (on-git event))))
+
         on-pin-version
         (mf/use-fn
          (fn [_]
@@ -718,6 +731,14 @@
          [:span {:class (stl/css :item-name)}
           (tr "dashboard.show-version-history")]
          [:> shortcuts* {:id :toggle-history}]]
+
+        (when (contains? cf/flags :git-integration)
+          [:> dropdown-menu-item* {:class (stl/css :base-menu-item :submenu-item)
+                                   :on-click    on-git
+                                   :on-key-down on-git-key-down
+                                   :id          "file-menu-git"}
+           [:span {:class (stl/css :item-name)}
+            (tr "workspace.git.menu")]])
 
         [:div {:class (stl/css :separator)}]])
 

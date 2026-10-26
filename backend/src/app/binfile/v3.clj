@@ -365,30 +365,42 @@
     (.closeEntry ^ZipOutputStream output)))
 
 
-(defn- get-file
-  [{:keys [::bfc/export-type] :as cfg} file-id]
+(defn- prepare-export-file
+  [cfg file-id detach? embed? file]
+  (cond-> file
+    detach?
+    (-> (ctf/detach-external-references file-id)
+        (dissoc :libraries))
 
+    embed?
+    (update :data #(bfc/embed-assets cfg % file-id))
+
+    (not (or detach? embed?))
+    (update :data #(bfc/absorb-unlinked-tokens-source
+                    cfg % (bfc/get-libraries cfg [file-id])))
+
+    :always
+    (bfc/clean-file-features)))
+
+(defn- get-file
+  "Load the file to export.
+
+  `::bfc/file-override`, when set, is that file. A git push of a named
+  version passes the snapshot data here. The live row is still the
+  source when the key is absent."
+  [{:keys [::bfc/export-type ::bfc/file-override] :as cfg} file-id]
   (let [detach? (= export-type :detach-libraries)
         embed?  (= export-type :merge-libraries)]
     (db/tx-run! cfg (fn [cfg]
                       (bfc/set-transaction-idle-timeout cfg)
-                      (cond-> (bfc/get-file cfg file-id
-                                            {:realize? true
-                                             :include-deleted? true
-                                             :lock-for-update? true})
-                        detach?
-                        (-> (ctf/detach-external-references file-id)
-                            (dissoc :libraries))
-
-                        embed?
-                        (update :data #(bfc/embed-assets cfg % file-id))
-
-                        (not (or detach? embed?))
-                        (update :data #(bfc/absorb-unlinked-tokens-source
-                                        cfg % (bfc/get-libraries cfg [file-id])))
-
-                        :always
-                        (bfc/clean-file-features))))))
+                      (prepare-export-file
+                       cfg file-id detach? embed?
+                       (if (some? file-override)
+                         file-override
+                         (bfc/get-file cfg file-id
+                                       {:realize? true
+                                        :include-deleted? true
+                                        :lock-for-update? true})))))))
 
 (defn- export-storage-objects
   [{:keys [::output ::bfc/canonical] :as cfg}]

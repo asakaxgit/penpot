@@ -690,3 +690,6 @@
 
 (def access-token-created
   (l/derived :access-token-created st/state))
+
+(def workspace-git
+  (l/derived :workspace-git st/state))
